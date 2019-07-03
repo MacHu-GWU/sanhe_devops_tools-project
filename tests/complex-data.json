@@ -1,0 +1,8 @@
+{
+    "name": "alice", // it is a fake name
+    "profile": {
+        "ssn": "123-45-6789",
+        "first name": "obama",
+        "phone-number": "999-888-7777"
+    }
+}

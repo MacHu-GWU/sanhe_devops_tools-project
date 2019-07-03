@@ -1,0 +1,9 @@
+{
+    "ENVIRONMENT_NAME": "config-lib-dev",
+    "GITHUB_PASSWORD": "DDDcR6hz#LYhopNM%JyJRhm89ApvFzVa",
+    "GITHUB_USERNAME": "admin@gmail.com",
+    "PROJECT_NAME": "config_lib",
+    "PROJECT_NAME_SLUG": "config-lib",
+    "RUNTIME_NAME": "local",
+    "STAGE": "dev"
+}
