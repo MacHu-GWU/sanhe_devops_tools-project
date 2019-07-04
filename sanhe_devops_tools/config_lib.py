@@ -2,7 +2,7 @@
 
 """
 A python config management tool to manage config parameter in centralized place.
-And allow different devops tools to easily talk to each other via JSON.
+And allow different DevOps tools to easily talk to each other via JSON.
 
 This library implemented in pure Python with no dependencies.
 
@@ -34,10 +34,11 @@ import os
 import re
 import sys
 import json
+import copy
 import inspect
 from collections import OrderedDict
 
-if sys.version_info.major >= 3 and sys.version_info.minor >= 5:
+if sys.version_info.major >= 3 and sys.version_info.minor >= 5:  # pragma: no cover
     from typing import Dict
 
 
@@ -121,6 +122,56 @@ def add_metaclass(metaclass):
     return wrapper
 
 
+try:
+    # python3 renamed copy_reg to copyreg
+    import copyreg
+except ImportError:  # pragma: no cover
+    import copy_reg as copyreg
+
+
+class Sentinel(object):
+    _existing_instances = {}
+
+    def __init__(self, name):
+        super(Sentinel, self).__init__()
+        self._name = name
+        self._existing_instances[self._name] = self
+
+    def __repr__(self):
+        return "<{0}>".format(self._name)
+
+    def __getnewargs__(self):
+        return (self._name,)
+
+    def __new__(cls, name, obj_id=None):  # obj_id is for compatibility with previous versions
+        existing_instance = cls._existing_instances.get(name)
+        if existing_instance is not None:
+            return existing_instance
+        return super(Sentinel, cls).__new__(cls)
+
+
+def _sentinel_unpickler(name, obj_id=None):  # obj_id is for compat. with prev. versions
+    if name in Sentinel._existing_instances:
+        return Sentinel._existing_instances[name]
+    return Sentinel(name)
+
+
+def _sentinel_pickler(sentinel):
+    return _sentinel_unpickler, sentinel.__getnewargs__()
+
+
+copyreg.pickle(Sentinel, _sentinel_pickler, _sentinel_unpickler)
+
+NOTHING = Sentinel("NOTHING")
+
+
+class ValueNotSetError(Exception):
+    """
+    Raises when trying to get value of a field that have not set value before.
+    """
+    pass
+
+
 class DeriableSetValueError(Exception):
     """
     Raises when trying to set value for Deriable Field.
@@ -145,29 +196,26 @@ class Field(object):
     _creation_index = 0
 
     def __init__(self,
-                 value=None,
-                 default=None,
+                 default=NOTHING,
                  dont_dump=False,
                  printable=True):
-        if value is None:
-            self.value = default
-        self.value = value
-        self.dont_dump = dont_dump
-        self.printable = printable
+        self.name = None
+        self._value = default
 
-        self._config_object = None
-        self._creation_index = Field._creation_index
+        self.dont_dump = dont_dump  # type: bool
+        self.printable = printable  # type: bool
+
+        self._config_object = NOTHING  # type: BaseConfigClass
+        self._creation_index = Field._creation_index  # type: int
         Field._creation_index += 1
 
-        self._getter_method = None
+        self._getter_method = NOTHING  # type: callable
 
-        def _validate_method(self, value):
-            return True
-
-        self._validate_method = _validate_method
+    def __repr__(self):
+        return "{}(name={!r}, value={!r})".format(self.__class__.__name__, self.name, self._value)
 
     def set_value(self, value):
-        raise DeriableSetValueError("Derivable.set_value method should never bee called")
+        raise DeriableSetValueError("Derivable.set_value() method should never bee called")
 
     def get_value(self, check_dont_dump=False, check_printable=False):
         """
@@ -177,8 +225,21 @@ class Field(object):
         :param check_dont_dump:
         :param check_printable:
         :return:
+
+        **CN Doc**
+
+        对于 Constant Field:
+
+        - 如果: self.value = NOTHING, 同时 .set_value(...) 方法从来没有被调用过.
+        - 如果: self.value 不等于 NOTHING, 说明 .set_value(...) 方法被吊用过, 则
+            返回 self.value
+
+        对于 Derivable Field:
+
+        - 如果: self._getter_method() 没有成功
+
         """
-        if self._config_object is None:
+        if self._config_object is NOTHING:
             raise AttributeError("Field.get_value() can't be called without "
                                  "initialized with ")
         if check_dont_dump:
@@ -188,10 +249,20 @@ class Field(object):
             if not self.printable:
                 return "***HIDDEN***"
 
-        if self._getter_method is None:
-            return self.value
+        if self._getter_method is NOTHING:
+            if self._value is NOTHING:
+                raise ValueNotSetError(
+                    "{}.{} has not set a value yet!".format(
+                        self.__class__.__name__, self.name
+                    )
+                )
+            else:
+                return self._value
         else:
             return self._getter_method(self._config_object)
+
+    def _validate_method(self, config_object, value):
+        return True
 
     def validator(self, method):
         """
@@ -208,7 +279,7 @@ class Field(object):
         """
         An abstract method executes the validator method.
         """
-        raise NotImplementedError
+        self._validate_method(self._config_object, self.get_value())
 
 
 class DontDumpError(Exception):
@@ -224,10 +295,7 @@ class Constant(Field):
     """
 
     def set_value(self, value):
-        self.value = value
-
-    def validate(self):
-        self._validate_method(self, self.get_value())
+        self._value = value
 
 
 class Derivable(Field):
@@ -237,9 +305,6 @@ class Derivable(Field):
 
     def getter(self, method):
         self._getter_method = method
-
-    def validate(self, config_instance):
-        self._validate_method(self, self.get_value(config_instance))
 
 
 def is_instance_or_subclass(val, class_):
@@ -261,7 +326,7 @@ def _get_fields(attrs, field_class, pop=False, ordered=False):
         for field_name, field_value in attrs.items()
         if is_instance_or_subclass(field_value, field_class)
     ]
-    if pop:
+    if pop:  # pragma: no cover
         for field_name, _ in fields:
             del attrs[field_name]
     if ordered:
@@ -309,6 +374,8 @@ class ConfigMeta(type):
             for name, field in klass._declared_fields.items()
             if isinstance(field, Derivable)
         ])
+        for name, field in klass._declared_fields.items():
+            field.name = name
         return klass
 
 
@@ -323,12 +390,30 @@ class BaseConfigClass(object):
     _constant_fields = OrderedDict()  # type: Dict[str: Constant]
     _deriable_fields = OrderedDict()  # type: Dict[str: Derivable]
 
-    # --- constructuror method
+    # --- constructor method
     def __init__(self, **kwargs):
+        self.__pre_hook_init__()
         for name, field in self._declared_fields.items():
             if name in kwargs:
                 field.set_value(kwargs[name])
             field._config_object = self
+
+    def __pre_hook_init__(self):
+        self._declared_fields = OrderedDict([
+            (attr, copy.deepcopy(field))
+            for attr, field in self._declared_fields.items()
+        ])
+        self._constant_fields = OrderedDict([
+            (attr, self._declared_fields[attr])
+            for attr, _ in self._constant_fields.items()
+        ])
+        self._deriable_fields = OrderedDict([
+            (attr, self._declared_fields[attr])
+            for attr, _ in self._deriable_fields.items()
+        ])
+
+        for attr, field in self._declared_fields.items():
+            setattr(self, attr, field)
 
     @classmethod
     def from_dict(cls, dct):
@@ -387,18 +472,17 @@ class BaseConfigClass(object):
         print(self.__repr__())
 
     def validate(self):
-        for attr, value in self._constant_fields.items():
-            value.validate()
-        for attr, value in self._deriable_fields.items():
-            value.validate(self)
+        for field in self._declared_fields.values():
+            field.validate()
 
-    CONFIG_DIR = None
+    # --- config file path management
+    CONFIG_DIR = NOTHING  # type: str
 
     def _join_config_dir(self, filename):
-        if self.CONFIG_DIR is None:
-            raise ValueError("You have to specify `CONFIG_DIR`!")
+        if self.CONFIG_DIR is NOTHING:
+            raise ValueError("You have to specify `{}.CONFIG_DIR`!".format(self.__class__.__name__))
         if not os.path.exists(self.CONFIG_DIR):
-            raise ValueError("CONFIG_DIR('{}') doesn't exist!".format(self.CONFIG_DIR))
+            raise ValueError("`{}.CONFIG_DIR` ('{}') doesn't exist!".format(self.__class__.__name__, self.CONFIG_DIR))
         return os.path.join(self.CONFIG_DIR, filename)
 
     @property
@@ -457,7 +541,6 @@ class BaseConfigClass(object):
     def to_terraform_config_data(self):
         return self.to_dict()
 
-    #
     def _dump_for_xxx_config_file(self,
                                   to_config_data_meth,
                                   config_json_file_path):

@@ -10,12 +10,14 @@ from sanhe_devops_tools.config_lib import (
 )
 
 
-class Config(ConfigClass):
+class Config1(ConfigClass):
     CONFIG_DIR = path.dirname(__file__)
 
     PROJECT_NAME = Constant()
     STAGE = Constant()
 
+
+class Config2(Config1):
     PROJECT_NAME_SLUG = Derivable()
 
     @PROJECT_NAME_SLUG.getter
@@ -53,6 +55,10 @@ class Config(ConfigClass):
             return "local"
 
 
+class Config(Config2):
+    pass
+
+
 config = Config(
     PROJECT_NAME="my_project",
     GITHUB_USERNAME="alice",
@@ -73,10 +79,10 @@ class TestConfigClass(object):
         assert config.LAPTOP_PASSWORD.get_value() == "adminpassword"
         assert config.RUNTIME_NAME.get_value() in ["circleci", "lambda", "local"]
 
-    def test_repr(self):
+    def test_repr_and_printable_option(self):
         assert "mypassword" not in config.__repr__()
 
-    def test_dont_dump(self):
+    def test_dont_dump_option(self):
         data = config.to_dict()
         assert "GITHUB_PASSWORD" in data
         assert "LAPTOP_PASSWORD" not in data
